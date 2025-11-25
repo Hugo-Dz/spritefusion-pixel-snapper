@@ -1,4 +1,4 @@
-use image::{GenericImageView, ImageBuffer, Rgb, RgbImage};
+use image::{GenericImageView, ImageBuffer, Rgba, RgbaImage};
 use rand::prelude::*;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -105,9 +105,9 @@ fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) -> Res
 
     validate_image_dimensions(width, height)?;
 
-    let rgb_img = img.to_rgb8();
+    let rgba_img = img.to_rgba8();
 
-    let quantized_img = quantize_image(&rgb_img, &config)?;
+    let quantized_img = quantize_image(&rgba_img, &config)?;
     let (profile_x, profile_y) = compute_profiles(&quantized_img)?;
 
     // Estimate step sizes
@@ -224,22 +224,26 @@ fn validate_image_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
+fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     if config.k_colors == 0 {
         return Err(PixelSnapperError::InvalidInput(
             "Number of colors must be greater than 0".to_string(),
         ));
     }
 
-    let pixels_f32: Vec<[f32; 3]> = img
+    let opaque_pixels: Vec<[f32; 3]> = img
         .pixels()
-        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .filter_map(|p| {
+            if p[3] == 0 {
+                None
+            } else {
+                Some([p[0] as f32, p[1] as f32, p[2] as f32])
+            }
+        })
         .collect();
-    let n_pixels = pixels_f32.len();
+    let n_pixels = opaque_pixels.len();
     if n_pixels == 0 {
-        return Err(PixelSnapperError::InvalidInput(
-            "Image has no pixels".to_string(),
-        ));
+        return Ok(img.clone());
     }
 
     let mut rng = ChaCha8Rng::seed_from_u64(config.k_seed);
@@ -260,7 +264,7 @@ fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
 
     let mut centroids: Vec<[f32; 3]> = Vec::with_capacity(k);
     let first_idx = sample_index(&mut rng, n_pixels);
-    centroids.push(pixels_f32[first_idx]);
+    centroids.push(opaque_pixels[first_idx]);
     let mut distances = vec![f32::MAX; n_pixels];
 
     // Maybe try a faster algorithm for this? like https://crates.io/crates/kmeans_colors
@@ -268,7 +272,7 @@ fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
         let last_c = centroids.last().unwrap();
         let mut sum_sq_dist = 0.0;
 
-        for (i, p) in pixels_f32.iter().enumerate() {
+        for (i, p) in opaque_pixels.iter().enumerate() {
             let d_sq = dist_sq(p, last_c);
             if d_sq < distances[i] {
                 distances[i] = d_sq;
@@ -278,13 +282,13 @@ fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
 
         if sum_sq_dist <= 0.0 {
             let idx = sample_index(&mut rng, n_pixels);
-            centroids.push(pixels_f32[idx]);
+            centroids.push(opaque_pixels[idx]);
         } else {
             let dist = WeightedIndex::new(&distances).map_err(|e| {
                 PixelSnapperError::ProcessingError(format!("Failed to sample new centroid: {}", e))
             })?;
             let idx = dist.sample(&mut rng);
-            centroids.push(pixels_f32[idx]);
+            centroids.push(opaque_pixels[idx]);
         }
     }
 
@@ -293,7 +297,7 @@ fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
         let mut sums = vec![[0.0f32; 3]; k];
         let mut counts = vec![0usize; k];
 
-        for p in &pixels_f32 {
+        for p in &opaque_pixels {
             let mut min_dist = f32::MAX;
             let mut best_k = 0;
 
@@ -338,24 +342,29 @@ fn quantize_image(img: &RgbImage, config: &Config) -> Result<RgbImage> {
         prev_centroids.copy_from_slice(&centroids);
     }
 
-    let mut new_img = RgbImage::new(img.width(), img.height());
-    for ((x, y, _), p) in img.enumerate_pixels().zip(pixels_f32.iter()) {
+    let mut new_img = RgbaImage::new(img.width(), img.height());
+    for (x, y, pixel) in img.enumerate_pixels() {
+        if pixel[3] == 0 {
+            new_img.put_pixel(x, y, *pixel);
+            continue;
+        }
+        let p = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
         let mut min_dist = f32::MAX;
-        let mut best_c = [0u8; 3];
+        let mut best_c = [pixel[0], pixel[1], pixel[2]];
 
         for c in &centroids {
-            let d = dist_sq(p, c);
+            let d = dist_sq(&p, c);
             if d < min_dist {
                 min_dist = d;
                 best_c = [c[0].round() as u8, c[1].round() as u8, c[2].round() as u8];
             }
         }
-        new_img.put_pixel(x, y, Rgb(best_c));
+        new_img.put_pixel(x, y, Rgba([best_c[0], best_c[1], best_c[2], pixel[3]]));
     }
     Ok(new_img)
 }
 
-fn compute_profiles(img: &RgbImage) -> Result<(Vec<f64>, Vec<f64>)> {
+fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
     let (w, h) = img.dimensions();
 
     if w < 3 || h < 3 {
@@ -369,7 +378,11 @@ fn compute_profiles(img: &RgbImage) -> Result<(Vec<f64>, Vec<f64>)> {
 
     let gray = |x, y| {
         let p = img.get_pixel(x, y);
-        0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64
+        if p[3] == 0 {
+            0.0
+        } else {
+            0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64
+        }
     };
 
     // kernels: [-1, 0, 1]
@@ -748,7 +761,7 @@ fn snap_uniform_cuts(
     cuts
 }
 
-fn resample(img: &RgbImage, cols: &[usize], rows: &[usize]) -> Result<RgbImage> {
+fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage> {
     if cols.len() < 2 || rows.len() < 2 {
         return Err(PixelSnapperError::ProcessingError(
             "Insufficient grid cuts for resampling".to_string(),
@@ -757,7 +770,7 @@ fn resample(img: &RgbImage, cols: &[usize], rows: &[usize]) -> Result<RgbImage> 
 
     let out_w = (cols.len().max(1) - 1) as u32;
     let out_h = (rows.len().max(1) - 1) as u32;
-    let mut final_img = ImageBuffer::new(out_w, out_h);
+    let mut final_img: RgbaImage = ImageBuffer::new(out_w, out_h);
 
     for (y_i, w_y) in rows.windows(2).enumerate() {
         for (x_i, w_x) in cols.windows(2).enumerate() {
@@ -770,7 +783,7 @@ fn resample(img: &RgbImage, cols: &[usize], rows: &[usize]) -> Result<RgbImage> 
                 continue;
             }
 
-            let mut counts: HashMap<[u8; 3], usize> = HashMap::new();
+            let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
 
             for y in ys..ye {
                 for x in xs..xe {
@@ -781,9 +794,9 @@ fn resample(img: &RgbImage, cols: &[usize], rows: &[usize]) -> Result<RgbImage> 
                 }
             }
 
-            let mut best_pixel = [0, 0, 0];
+            let mut best_pixel = [0, 0, 0, 0];
 
-            let mut candidates: Vec<([u8; 3], usize)> = counts.into_iter().collect();
+            let mut candidates: Vec<([u8; 4], usize)> = counts.into_iter().collect();
             candidates.sort_by(|a, b| {
                 let count_cmp = b.1.cmp(&a.1);
                 if count_cmp == Ordering::Equal {
@@ -797,7 +810,7 @@ fn resample(img: &RgbImage, cols: &[usize], rows: &[usize]) -> Result<RgbImage> 
                 best_pixel = winner.0;
             }
 
-            final_img.put_pixel(x_i as u32, y_i as u32, Rgb(best_pixel));
+            final_img.put_pixel(x_i as u32, y_i as u32, Rgba(best_pixel));
         }
     }
     Ok(final_img)
