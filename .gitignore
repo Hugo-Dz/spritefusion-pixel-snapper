@@ -1,2 +1,4 @@
 /target
+/samples
+/pkg
 .DS_Store
