@@ -21,21 +21,20 @@ pub fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) ->
 
     let rgba_img = img.to_rgba8();
 
-    let quantized_img = crate::quantize::quantize_image(&rgba_img, &config)?;
-    let (profile_x, profile_y) = crate::grid::compute_profiles(&quantized_img)?;
+    // Quantize and get pre-built palette + indexed buffer
+    let quantized = crate::quantize::quantize_image(&rgba_img, &config)?;
 
-    // Estimate step sizes
+    let (profile_x, profile_y) = crate::grid::compute_profiles(&quantized.img)?;
+
     let step_x_opt = crate::grid::estimate_step_size(&profile_x, &config);
     let step_y_opt = crate::grid::estimate_step_size(&profile_y, &config);
 
-    // Resolve step sizes. Some instabilities so use sibling axis if one fails, or fallback if both fail
     let (step_x, step_y) =
         crate::grid::resolve_step_sizes(step_x_opt, step_y_opt, width, height, &config);
 
     let raw_col_cuts = crate::grid::walk(&profile_x, step_x, width as usize, &config)?;
     let raw_row_cuts = crate::grid::walk(&profile_y, step_y, height as usize, &config)?;
 
-    // Two-pass stabilization: first pass with raw cuts, then cross-validate
     let (col_cuts, row_cuts) = crate::grid::stabilize_both_axes(
         &profile_x,
         &profile_y,
@@ -46,9 +45,15 @@ pub fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) ->
         &config,
     );
 
-    let output_img = crate::resample::resample(&quantized_img, &col_cuts, &row_cuts)?;
+    // Use pre-built palette and indexed buffer - no redundant work!
+    let output_img = crate::resample::resample(
+        &quantized.img,
+        &col_cuts,
+        &row_cuts,
+        &quantized.palette,
+        &quantized.indexed,
+    )?;
 
-    // Returns bytes for both implementations
     let mut output_bytes = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut output_bytes);
     output_img
