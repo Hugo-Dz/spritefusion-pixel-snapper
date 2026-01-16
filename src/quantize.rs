@@ -4,14 +4,28 @@ use image::{Rgba, RgbaImage};
 use kmeans_colors::get_kmeans;
 use palette::{white_point::D65, FromColor, Lab, Srgba};
 
+use rayon::prelude::*;
+
+/// Detects the number of unique colors in the image to suggest an optimal K for quantization.
+pub fn auto_detect_k_colors(img: &RgbaImage) -> usize {
+    let mut unique_colors = std::collections::HashSet::new();
+    for p in img.pixels() {
+        if p[3] > 0 {
+            unique_colors.insert(p.0);
+        }
+    }
+    // Cap at a reasonable maximum for performance and sanity
+    unique_colors.len().clamp(1, 256)
+}
+
 /// Quantizes the image to a fixed number of colors using K-means clustering.
 /// Uses Lab color space for better perceptual color selection.
 pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
-    if config.k_colors == 0 {
-        return Err(crate::error::PixelSnapperError::InvalidInput(
-            "Number of colors must be greater than 0".to_string(),
-        ));
-    }
+    let k_target = if config.k_colors == 0 {
+        auto_detect_k_colors(img)
+    } else {
+        config.k_colors
+    };
 
     let width = img.width();
     let height = img.height();
@@ -27,9 +41,9 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         return Ok(img.clone());
     }
 
-    // Convert opaque pixels to Lab for better perceptual clustering
+    // Convert opaque pixels to Lab for better perceptual clustering in parallel
     let lab_pixels: Vec<Lab<D65, f32>> = opaque_indices
-        .iter()
+        .par_iter()
         .map(|&i| {
             let p = pixels[i];
             let srgba = Srgba::new(
@@ -42,7 +56,7 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         })
         .collect();
 
-    let k = config.k_colors.min(lab_pixels.len());
+    let k = k_target.min(lab_pixels.len());
     let max_iter = config.max_kmeans_iterations;
     let converge = 0.01;
     let verbose = false;
@@ -51,22 +65,32 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     // Perform K-means clustering in Lab space
     let result = get_kmeans(k, max_iter, converge, verbose, &lab_pixels, seed);
 
-    // Map pixels back to their closest centroid
+    // Map pixels back to their closest centroid in parallel
     let mut quantized_pixels = pixels.clone();
 
-    for (idx, &pixel_idx) in opaque_indices.iter().enumerate() {
-        let centroid_idx = result.indices[idx];
-        let lab_centroid = result.centroids[centroid_idx as usize];
-        let srgba_centroid: Srgba = Srgba::from_color(lab_centroid);
+    // Use a parallel iterator to compute the changes, then apply them
+    let changes: Vec<(usize, [u8; 4])> = opaque_indices
+        .par_iter()
+        .enumerate()
+        .map(|(idx, &pixel_idx)| {
+            let centroid_idx = result.indices[idx];
+            let lab_centroid = result.centroids[centroid_idx as usize];
+            let srgba_centroid: Srgba = Srgba::from_color(lab_centroid);
 
-        // Preserve original alpha
-        let original_alpha = pixels[pixel_idx][3];
-        quantized_pixels[pixel_idx] = [
-            (srgba_centroid.red * 255.0).round() as u8,
-            (srgba_centroid.green * 255.0).round() as u8,
-            (srgba_centroid.blue * 255.0).round() as u8,
-            original_alpha,
-        ];
+            // Preserve original alpha
+            let original_alpha = pixels[pixel_idx][3];
+            let rgba = [
+                (srgba_centroid.red * 255.0).round() as u8,
+                (srgba_centroid.green * 255.0).round() as u8,
+                (srgba_centroid.blue * 255.0).round() as u8,
+                original_alpha,
+            ];
+            (pixel_idx, rgba)
+        })
+        .collect();
+
+    for (idx, rgba) in changes {
+        quantized_pixels[idx] = rgba;
     }
 
     let mut new_img = RgbaImage::new(width, height);
@@ -85,14 +109,14 @@ mod tests {
     use crate::config::Config;
 
     #[test]
-    fn test_quantize_image_zero_colors() {
+    fn test_quantize_image_auto_colors() {
         let img = RgbaImage::new(10, 10);
         let config = Config {
             k_colors: 0,
             ..Config::default()
         };
         let result = quantize_image(&img, &config);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::error::{PixelSnapperError, Result};
 use image::{ImageBuffer, RgbaImage};
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 pub fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage> {
@@ -11,47 +12,63 @@ pub fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaI
 
     let out_w = (cols.len().max(1) - 1) as u32;
     let out_h = (rows.len().max(1) - 1) as u32;
-    let mut final_img: RgbaImage = ImageBuffer::new(out_w, out_h);
 
-    for (y_i, w_y) in rows.windows(2).enumerate() {
-        for (x_i, w_x) in cols.windows(2).enumerate() {
+    // Parallelize processing of rows
+    let rows_vec: Vec<&[usize]> = rows.windows(2).collect();
+    let pixels: Vec<[u8; 4]> = rows_vec
+        .into_par_iter()
+        .flat_map(|w_y| {
             let ys = w_y[0];
             let ye = w_y[1];
-            let xs = w_x[0];
-            let xe = w_x[1];
 
-            if xe <= xs || ye <= ys {
-                continue;
-            }
+            // Processing each column in the row
+            cols.windows(2)
+                .map(|w_x| {
+                    let xs = w_x[0];
+                    let xe = w_x[1];
 
-            let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
-
-            for y in ys..ye {
-                for x in xs..xe {
-                    if x < img.width() as usize && y < img.height() as usize {
-                        let p = img.get_pixel(x as u32, y as u32).0;
-                        *counts.entry(p).or_insert(0) += 1;
+                    if xe <= xs || ye <= ys {
+                        return [0, 0, 0, 0];
                     }
-                }
-            }
 
-            let mut best_pixel = [0, 0, 0, 0];
-            let mut candidates: Vec<([u8; 4], usize)> = counts.into_iter().collect();
-            candidates.sort_by(|a, b| {
-                b.1.cmp(&a.1).then_with(|| {
-                    let sum_a: u32 = a.0.iter().map(|&v| v as u32).sum();
-                    let sum_b: u32 = b.0.iter().map(|&v| v as u32).sum();
-                    sum_b.cmp(&sum_a)
+                    let mut counts: HashMap<[u8; 4], usize> = HashMap::new();
+
+                    for y in ys..ye {
+                        for x in xs..xe {
+                            if x < img.width() as usize && y < img.height() as usize {
+                                let p = img.get_pixel(x as u32, y as u32).0;
+                                *counts.entry(p).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    let mut best_pixel = [0, 0, 0, 0];
+                    let mut candidates: Vec<([u8; 4], usize)> = counts.into_iter().collect();
+                    candidates.sort_by(|a, b| {
+                        b.1.cmp(&a.1).then_with(|| {
+                            let sum_a: u32 = a.0.iter().map(|&v| v as u32).sum();
+                            let sum_b: u32 = b.0.iter().map(|&v| v as u32).sum();
+                            sum_b.cmp(&sum_a)
+                        })
+                    });
+
+                    if let Some((p, _)) = candidates.first() {
+                        best_pixel = *p;
+                    }
+
+                    best_pixel
                 })
-            });
+                .collect::<Vec<[u8; 4]>>()
+        })
+        .collect();
 
-            if let Some((p, _)) = candidates.first() {
-                best_pixel = *p;
-            }
-
-            final_img.put_pixel(x_i as u32, y_i as u32, image::Rgba(best_pixel));
-        }
+    let mut final_img: RgbaImage = ImageBuffer::new(out_w, out_h);
+    for (i, &p) in pixels.iter().enumerate() {
+        let x = i as u32 % out_w;
+        let y = i as u32 / out_w;
+        final_img.put_pixel(x, y, image::Rgba(p));
     }
+
     Ok(final_img)
 }
 

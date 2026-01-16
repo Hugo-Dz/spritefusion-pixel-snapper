@@ -3,6 +3,8 @@ use crate::error::{PixelSnapperError, Result};
 use image::RgbaImage;
 use std::cmp::Ordering;
 
+use rayon::prelude::*;
+
 pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
     let (w, h) = img.dimensions();
 
@@ -11,9 +13,6 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
             "Image too small (minimum 3x3)".to_string(),
         ));
     }
-
-    let mut col_proj = vec![0.0; w as usize];
-    let mut row_proj = vec![0.0; h as usize];
 
     let gray = |x, y| {
         let p = img.get_pixel(x, y);
@@ -24,23 +23,41 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
         }
     };
 
-    // kernels: [-1, 0, 1]
-    for y in 0..h {
-        for x in 1..w - 1 {
-            let left = gray(x - 1, y);
-            let right = gray(x + 1, y);
-            let grad = (right - left).abs();
-            col_proj[x as usize] += grad;
-        }
-    }
-    for x in 0..w {
-        for y in 1..h - 1 {
-            let top = gray(x, y - 1);
-            let bottom = gray(x, y + 1);
-            let grad = (bottom - top).abs();
-            row_proj[y as usize] += grad;
-        }
-    }
+    // Parallelize column projection calculation
+    let col_proj: Vec<f64> = (0..w)
+        .into_par_iter()
+        .map(|x| {
+            if x == 0 || x == w - 1 {
+                0.0
+            } else {
+                let mut sum = 0.0;
+                for y in 0..h {
+                    let left = gray(x - 1, y);
+                    let right = gray(x + 1, y);
+                    sum += (right - left).abs();
+                }
+                sum
+            }
+        })
+        .collect();
+
+    // Parallelize row projection calculation
+    let row_proj: Vec<f64> = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            if y == 0 || y == h - 1 {
+                0.0
+            } else {
+                let mut sum = 0.0;
+                for x in 0..w {
+                    let top = gray(x, y - 1);
+                    let bottom = gray(x, y + 1);
+                    sum += (bottom - top).abs();
+                }
+                sum
+            }
+        })
+        .collect();
 
     Ok((col_proj, row_proj))
 }
@@ -50,7 +67,7 @@ pub fn estimate_step_size(profile: &[f64], config: &Config) -> Option<f64> {
         return None;
     }
 
-    let max_val = profile.iter().cloned().fold(0.0 / 0.0, f64::max);
+    let max_val = profile.iter().cloned().fold(0.0, f64::max);
     if max_val == 0.0 {
         return None; // Decide later
     }
@@ -221,9 +238,14 @@ pub fn walk(profile: &[f64], step_size: f64, limit: usize, config: &Config) -> R
 
         let mut max_val = -1.0;
         let mut max_idx = start_search;
-        for i in start_search..end_search {
-            if profile[i] > max_val {
-                max_val = profile[i];
+        for (i, &p) in profile
+            .iter()
+            .enumerate()
+            .take(end_search)
+            .skip(start_search)
+        {
+            if p > max_val {
+                max_val = p;
                 max_idx = i;
             }
         }
@@ -239,6 +261,13 @@ pub fn walk(profile: &[f64], step_size: f64, limit: usize, config: &Config) -> R
     Ok(cuts)
 }
 
+/// Suggests a minimum number of grid segments based on image dimensions.
+pub fn auto_detect_min_cuts(limit: usize) -> usize {
+    // Heuristic: assume a minimum cell size of 4 for very small images,
+    // up to a target of 16-32 segments for standard assets.
+    (limit / 32).max(4).min(limit / 4).max(2)
+}
+
 pub fn stabilize_cuts(
     profile: &[f64],
     cuts: Vec<usize>,
@@ -252,7 +281,14 @@ pub fn stabilize_cuts(
     }
 
     let cuts = sanitize_cuts(cuts, limit);
-    let min_required = config.min_cuts_per_axis.max(2).min(limit.saturating_add(1));
+    let auto_min = auto_detect_min_cuts(limit);
+    let min_required = if config.min_cuts_per_axis == 0 {
+        auto_min
+    } else {
+        config.min_cuts_per_axis
+    }
+    .max(2)
+    .min(limit.saturating_add(1));
     let axis_cells = cuts.len().saturating_sub(1);
     let sibling_cells = sibling_cuts.len().saturating_sub(1);
     let sibling_has_grid =
@@ -371,8 +407,7 @@ pub fn snap_uniform_cuts(
         let end = end as usize;
         let mut best_idx = start.min(profile.len().saturating_sub(1));
         let mut best_val = -1.0;
-        for i in start..=end.min(profile.len().saturating_sub(1)) {
-            let v = profile.get(i).copied().unwrap_or(0.0);
+        for (i, &v) in profile.iter().enumerate().take(end + 1).skip(start) {
             if v > best_val {
                 best_val = v;
                 best_idx = i;
