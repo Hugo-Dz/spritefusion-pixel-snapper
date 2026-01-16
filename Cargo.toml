@@ -16,7 +16,11 @@ kmeans_colors = { version = "0.6", features = ["palette_color"] }
 palette = { version = "0.7", features = ["std"] }
 rayon = "1.8"
 
-# WASM-specific dependencies
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

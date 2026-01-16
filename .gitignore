@@ -2,3 +2,15 @@
 /samples
 /pkg
 .DS_Store
+
+# Output images
+*_fixed.png
+output.png
+static/*_fixed.png
+static/batch_test_final/
+static/batch_output/
+static/batch_test/
+static/details_final.png
+static/details1.png
+static/details2.png
+static/details_copy.png
