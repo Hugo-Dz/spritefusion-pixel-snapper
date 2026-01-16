@@ -42,21 +42,38 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     }
 
     // Convert opaque pixels to Lab for better perceptual clustering in parallel
-    // We inline the conversion math to f32 to maximize throughput on SIMD units
+    // Generate or retrieve sRGB -> Linear lookup table
+    // This avoids expensive powf(2.4) calls for every pixel
+    static SRGB_LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    let lut = SRGB_LUT.get_or_init(|| {
+        let mut table = [0.0; 256];
+        for (i, val) in table.iter_mut().enumerate() {
+            let s = i as f32 / 255.0;
+            *val = if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            };
+        }
+        table
+    });
+
+    // Convert opaque pixels to Lab for better perceptual clustering in parallel
+    // We inline the conversion math to f32 & use LUT to maximize throughput on SIMD units
     let lab_pixels: Vec<Lab<D65, f32>> = opaque_indices
         .par_iter()
         .map(|&i| {
             let p = pixels[i];
             
             // Perceptual Lab conversion (Linearized SRGB -> XYZ -> Lab)
-            // Manual inlining for f32 performance
-            let r = p[0] as f32 / 255.0;
-            let g = p[1] as f32 / 255.0;
-            let b = p[2] as f32 / 255.0;
+            // Uses LUT for expensive gamma correction
+            let r = lut[p[0] as usize];
+            let g = lut[p[1] as usize];
+            let b = lut[p[2] as usize];
             let a = p[3] as f32 / 255.0;
 
-            let srgba = Srgba::new(r, g, b, a);
-            Lab::from_color(srgba.into_linear::<f32, f32>())
+            let linear = palette::LinSrgba::new(r, g, b, a);
+            Lab::from_color(linear)
         })
         .collect();
 

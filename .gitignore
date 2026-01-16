@@ -6,6 +6,9 @@
 /tests/data/
 /tests/output/
 
+# Demo
+/demo/
+
 # macOS
 .DS_Store
 

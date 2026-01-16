@@ -35,7 +35,99 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
                 let mut row_diff_sum = 0.0;
                 
                 // For column projection: handle x in 1..width-1 within this row
-                for x in 1..width - 1 {
+                let mut x = 1;
+                
+                #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+                {
+                    use core::arch::aarch64::*;
+                    
+                    // Process 16 pixels at a time where possible
+                    // We need x-1 and x+1, so we need safe margin
+                    while x + 16 < width - 1 {
+                        unsafe {
+                            // Helper to compute grayscale for 16 pixels at offset
+                            // Returns 16x u8 grayscale values
+                            #[inline(always)]
+                            unsafe fn gray_batch(ptr: *const u8) -> uint8x16_t {
+                                // Load de-interleaved: val.0=R, val.1=G, val.2=B, val.3=A
+                                let val = vld4q_u8(ptr);
+                                
+                                // R*38 + G*75 + B*15
+                                // Widen to u16
+                                let r_low = vmovl_u8(vget_low_u8(val.0));
+                                let r_high = vmovl_high_u8(val.0);
+                                let g_low = vmovl_u8(vget_low_u8(val.1));
+                                let g_high = vmovl_high_u8(val.1);
+                                let b_low = vmovl_u8(vget_low_u8(val.2));
+                                let b_high = vmovl_high_u8(val.2);
+
+                                // Use non-widening multiply-add (keep in u16)
+                                // r*38
+                                let mut w_low = vmulq_n_u16(r_low, 38);
+                                let mut w_high = vmulq_n_u16(r_high, 38);
+                                
+                                // + g*75
+                                w_low = vmlaq_n_u16(w_low, g_low, 75);
+                                w_high = vmlaq_n_u16(w_high, g_high, 75);
+                                
+                                // + b*15
+                                w_low = vmlaq_n_u16(w_low, b_low, 15);
+                                w_high = vmlaq_n_u16(w_high, b_high, 15);
+
+                                // Shift right by 7 and narrow back to u8
+                                let res_low = vshrn_n_u16(w_low, 7);
+                                let res_high = vshrn_n_u16(w_high, 7);
+                                vcombine_u8(res_low, res_high)
+                            }
+                            
+                            let base_curr = row_curr_base + x * 4;
+                            let base_prev = row_prev_base + x * 4;
+                            let base_next = row_next_base + x * 4;
+
+                            // Column contrib: |gray(x+1) - gray(x-1)|
+                            // We load 16 pixels starting at x-1 and x+1
+                            // Actually, better to load a wider strip or multiple vectors?
+                            // Loading unaligned is fine on NEON.
+                            let g_left_vals = gray_batch(img_samples.as_ptr().add(base_curr - 4));
+                            let g_right_vals = gray_batch(img_samples.as_ptr().add(base_curr + 4));
+                            let col_diff = vabdq_u8(g_right_vals, g_left_vals);
+
+                            // Accumulate into cp[x..x+16]
+                            // Convert u8x16 -> u16x8 (low/high) -> stored to array -> add to f64
+                            let low_u16 = vmovl_u8(vget_low_u8(col_diff));
+                            let high_u16 = vmovl_high_u8(col_diff);
+                            
+                            let mut buf_low = [0u16; 8];
+                            let mut buf_high = [0u16; 8];
+                            vst1q_u16(buf_low.as_mut_ptr(), low_u16);
+                            vst1q_u16(buf_high.as_mut_ptr(), high_u16);
+                            
+                            let target_slice = &mut cp[x..x+16];
+                            for i in 0..8 {
+                                target_slice[i] += buf_low[i] as f64;
+                            }
+                            for i in 0..8 {
+                                target_slice[i+8] += buf_high[i] as f64;
+                            }
+
+                            // Row contrib: |gray(y+1) - gray(y-1)|
+                            let g_top_vals = gray_batch(img_samples.as_ptr().add(base_prev));
+                            let g_bottom_vals = gray_batch(img_samples.as_ptr().add(base_next));
+                            let row_diff = vabdq_u8(g_bottom_vals, g_top_vals);
+                            
+                            // Horizontal add of row_diff to scalar accumulator
+                            let sum_vec = vpaddlq_u8(row_diff); // u16
+                            let sum_vec_u32 = vpaddlq_u16(sum_vec); // u32
+                            // add across vector
+                            let sum_u32 = vaddvq_u32(sum_vec_u32);
+                            row_diff_sum += sum_u32 as f64;
+                        }
+                        x += 16;
+                    }
+                }
+
+                // Scalar fallback for remaining pixels
+                while x < width - 1 {
                     let base = row_curr_base + x * 4;
                     
                     // Column contrib: |gray(x+1, y) - gray(x-1, y)|
@@ -67,6 +159,7 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
                          15 * img_samples[base_next + 2] as u32) >> 7
                     };
                     row_diff_sum += (g_bottom as f64 - g_top as f64).abs();
+                    x += 1;
                 }
                 
                 rp[y] = row_diff_sum;

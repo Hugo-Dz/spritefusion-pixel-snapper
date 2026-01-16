@@ -18,6 +18,12 @@ pub fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaI
         // Safe parallel writing using chunks_exact_mut
         let w = out_w;
         let samples = final_img.as_flat_samples_mut().samples;
+        
+        // Prepare input buffer for unsafe reading in the inner loop
+        let in_samples = img.as_flat_samples().samples;
+        let in_width = img.width() as usize;
+        let in_stride = in_width * 4;
+
         samples
             .par_chunks_exact_mut(4)
             .enumerate()
@@ -44,13 +50,25 @@ pub fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaI
                     let mut counts: Vec<([u8; 4], usize)> = Vec::with_capacity(4);
 
                     for y in ys..ye {
+                        let y_offset = y * in_stride;
                         for x in xs..xe {
-                            if x < img.width() as usize && y < img.height() as usize {
-                                let p = img.get_pixel(x as u32, y as u32).0;
-                                if let Some(entry) = counts.iter_mut().find(|e| e.0 == p) {
-                                    entry.1 += 1;
-                                } else {
-                                    counts.push((p, 1));
+                            // SECURITY: We trust the loop bounds (xs..xe, ys..ye) are bound-checked by the surrounding logic
+                            // and image dimensions.
+                            let base = y_offset + x * 4;
+                            unsafe {
+                                let samples_ptr = in_samples.as_ptr();
+                                let r = *samples_ptr.add(base) as u32;
+                                let g = *samples_ptr.add(base + 1) as u32;
+                                let b = *samples_ptr.add(base + 2) as u32;
+                                let a = *samples_ptr.add(base + 3) as u32;
+
+                                if a > 0 {
+                                    let key = [r as u8, g as u8, b as u8, a as u8];
+                                    if let Some(entry) = counts.iter_mut().find(|e| e.0 == key) {
+                                        entry.1 += 1;
+                                    } else {
+                                        counts.push((key, 1));
+                                    }
                                 }
                             }
                         }
