@@ -157,8 +157,8 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<QuantizedImage
         .collect();
 
     // Create output buffer and indexed buffer simultaneously
-    let mut out_samples = in_samples.to_vec();
-    let mut new_indexed = vec![255u8; width * height];
+    let out_samples = in_samples.to_vec();
+    let new_indexed = vec![255u8; width * height];
 
     opaque_indices
         .par_iter()
