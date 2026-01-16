@@ -69,16 +69,30 @@ pub fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaI
     Ok(final_img)
 }
 
-fn candidates_to_best_pixel(mut candidates: Vec<([u8; 4], usize)>) -> [u8; 4] {
-    candidates.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| {
-            let sum_a: u32 = a.0.iter().map(|&v| v as u32).sum();
-            let sum_b: u32 = b.0.iter().map(|&v| v as u32).sum();
-            sum_b.cmp(&sum_a)
-        })
-    });
+fn candidates_to_best_pixel(candidates: Vec<([u8; 4], usize)>) -> [u8; 4] {
+    if candidates.is_empty() {
+        return [0, 0, 0, 0];
+    }
 
-    candidates.first().map(|&(p, _)| p).unwrap_or([0, 0, 0, 0])
+    let mut best_p = candidates[0].0;
+    let mut max_count = candidates[0].1;
+    let mut max_sum = best_p.iter().map(|&v| v as u32).sum::<u32>();
+
+    for &(p, count) in candidates.iter().skip(1) {
+        if count > max_count {
+            max_count = count;
+            best_p = p;
+            max_sum = p.iter().map(|&v| v as u32).sum::<u32>();
+        } else if count == max_count {
+            let sum = p.iter().map(|&v| v as u32).sum::<u32>();
+            if sum > max_sum {
+                best_p = p;
+                max_sum = sum;
+            }
+        }
+    }
+
+    best_p
 }
 
 #[cfg(test)]

@@ -17,13 +17,8 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
         ));
     }
 
-    let gray = |p: &image::Rgba<u8>| {
-        if p[3] == 0 {
-            0.0
-        } else {
-            0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64
-        }
-    };
+    // Use direct slice access to the image buffer for maximum performance
+    let img_samples = img.as_flat_samples().samples;
 
     // Single-pass row-major scan using Rayon for maximum cache locality.
     // We aggregate horizontal and vertical projection sums simultaneously.
@@ -32,24 +27,46 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
         .fold(
             || (vec![0.0; width], vec![0.0; height]),
             |(mut cp, mut rp), y| {
-                let y_u32 = y as u32;
+                // Pre-calculate vertical offsets
+                let row_curr_base = y * width * 4;
+                let row_prev_base = (y - 1) * width * 4;
+                let row_next_base = (y + 1) * width * 4;
                 
-                // Row projection for y: sum over x of |gray(x, y+1) - gray(x, y-1)|
                 let mut row_diff_sum = 0.0;
                 
                 // For column projection: handle x in 1..width-1 within this row
                 for x in 1..width - 1 {
-                    let x_u32 = x as u32;
+                    let base = row_curr_base + x * 4;
                     
                     // Column contrib: |gray(x+1, y) - gray(x-1, y)|
-                    let g_left = gray(img.get_pixel(x_u32 - 1, y_u32));
-                    let g_right = gray(img.get_pixel(x_u32 + 1, y_u32));
-                    cp[x] += (g_right - g_left).abs();
+                    // Fixed-point grayscale: (38*R + 75*G + 15*B) >> 7
+                    let g_left = if img_samples[base - 4 + 3] == 0 { 0 } else {
+                        (38 * img_samples[base - 4] as u32 + 
+                         75 * img_samples[base - 3] as u32 + 
+                         15 * img_samples[base - 2] as u32) >> 7
+                    };
+                    let g_right = if img_samples[base + 4 + 3] == 0 { 0 } else {
+                        (38 * img_samples[base + 4] as u32 + 
+                         75 * img_samples[base + 5] as u32 + 
+                         15 * img_samples[base + 6] as u32) >> 7
+                    };
+                    cp[x] += (g_right as f64 - g_left as f64).abs();
                     
                     // Row contrib: |gray(x, y+1) - gray(x, y-1)|
-                    let g_top = gray(img.get_pixel(x_u32, y_u32 - 1));
-                    let g_bottom = gray(img.get_pixel(x_u32, y_u32 + 1));
-                    row_diff_sum += (g_bottom - g_top).abs();
+                    let base_prev = row_prev_base + x * 4;
+                    let base_next = row_next_base + x * 4;
+                    
+                    let g_top = if img_samples[base_prev + 3] == 0 { 0 } else {
+                        (38 * img_samples[base_prev] as u32 + 
+                         75 * img_samples[base_prev + 1] as u32 + 
+                         15 * img_samples[base_prev + 2] as u32) >> 7
+                    };
+                    let g_bottom = if img_samples[base_next + 3] == 0 { 0 } else {
+                        (38 * img_samples[base_next] as u32 + 
+                         75 * img_samples[base_next + 1] as u32 + 
+                         15 * img_samples[base_next + 2] as u32) >> 7
+                    };
+                    row_diff_sum += (g_bottom as f64 - g_top as f64).abs();
                 }
                 
                 rp[y] = row_diff_sum;
