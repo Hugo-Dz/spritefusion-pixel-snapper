@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff", "webp"] }
 clap = { version = "4.4", features = ["derive"] }
 rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"

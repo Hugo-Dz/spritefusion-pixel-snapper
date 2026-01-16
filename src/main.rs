@@ -80,7 +80,11 @@ fn process_cli(config: &Config) -> Result<()> {
 
 fn expand_directory(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir).map_err(|e| {
-        PixelSnapperError::ProcessingError(format!("Failed to read directory {}: {}", dir.display(), e))
+        PixelSnapperError::ProcessingError(format!(
+            "Failed to read directory {}: {}",
+            dir.display(),
+            e
+        ))
     })? {
         let entry = entry.map_err(|e| {
             PixelSnapperError::ProcessingError(format!("Failed to access entry: {}", e))
@@ -89,9 +93,12 @@ fn expand_directory(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<(
         if path.is_dir() {
             expand_directory(&path, files)?;
         } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-            let ext_lower = ext.to_lowercase();
-            if ext_lower == "png" || ext_lower == "jpg" || ext_lower == "jpeg" {
-                files.push(path);
+            let ext = ext.to_lowercase();
+            match ext.as_str() {
+                "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tiff" => {
+                    files.push(path);
+                }
+                _ => {}
             }
         }
     }

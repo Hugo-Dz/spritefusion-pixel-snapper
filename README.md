@@ -36,22 +36,54 @@ A tool to snap pixels to a perfect grid. Designed to fix messy and inconsistent 
 
 Requires [Rust](https://www.rust-lang.org/) installed on your machine.
 
-### 💻 CLI
+### 💻 CLI Usage Guide
+
+**Basic Single File:**
+Process a single image, saving to a specific output filename.
 
 ```bash
-git clone https://github.com/Hugo-Dz/spritefusion-pixel-snapper.git
-cd spritefusion-pixel-snapper
+cargo run --release -- input.png --output output.png
 ```
+
+**Auto-Detection (Default):**
+If you omit the color count, the tool automatically detects the optimal number of colors from the input image (up to 32).
 
 ```bash
-cargo run input.png output.png
+cargo run --release -- input.bmp --output output.bmp
 ```
 
-The command accepts an optional k-colors argument:
+**Custom Palette:** 🎨
+Force the output to use a specific set of colors by providing a palette image. Pixels will be mapped to the nearest color in your palette (Euclidean distance).
 
 ```bash
-cargo run input.png output.png 16
+cargo run --release -- input.png --output output.png --palette my_palette.png
 ```
+
+**Batch Processing:** 📦
+Process an entire directory of assets. Supported formats: `png`, `jpg`, `bmp`, `gif`, `webp`, `tiff`.
+
+```bash
+# Process all images in assets/raw and save to assets/processed
+cargo run --release -- assets/raw/ --output assets/processed/
+```
+
+**Manual Quantization:**
+Specify a target number of colors (K-means clustering) for color reduction.
+
+```bash
+cargo run --release -- input.png output.png --k-colors 16
+```
+
+### 🔍 Verification & Limitations
+
+**Dithering Preservation:**
+Pixel Snapper is designed to respect dithering patterns. To verify this quantitatively:
+1.  **Visual Inspection**: Check that dithered gradients remain smooth and don't clump into solid blocks.
+2.  **Statistical Analysis**: Use tools like ImageMagick to compare the color distribution histogram of the input vs. output. The general shape should be preserved, even if specific values change.
+
+**Artistic Limitations:**
+-   **Gradients**: Smooth, non-dithered gradients with thousands of colors will be quantized into bands. This is expected behavior for pixel art.
+-   **Off-Grid Elements**: "Sub-pixel" placement or anti-aliased edges used for artistic effect will be snapped to the nearest rigid grid cell, potentially altering the intended shape or "softness" of the object.
 
 ### 🌐 Web (WASM)
 

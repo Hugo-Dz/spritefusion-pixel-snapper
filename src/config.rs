@@ -28,6 +28,11 @@ pub struct Config {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(skip))]
     pub output: Option<String>,
 
+    /// Path to a custom palette image (overrides k_colors)
+    #[cfg_attr(not(target_arch = "wasm32"), arg(long))]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(skip))]
+    pub palette: Option<String>,
+
     #[cfg_attr(
         not(target_arch = "wasm32"),
         arg(long, hide = true, default_value_t = 15)
@@ -91,6 +96,7 @@ impl Default for Config {
             k_seed: 42,
             input_paths: Vec::new(),
             output: None,
+            palette: None,
             max_kmeans_iterations: 15,
             peak_threshold_multiplier: 0.2,
             peak_distance_filter: 4,

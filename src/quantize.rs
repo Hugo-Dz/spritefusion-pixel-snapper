@@ -43,6 +43,111 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<QuantizedImage
     let in_samples = img.as_flat_samples().samples;
     let in_stride = width * 4;
 
+    // Check for custom palette
+    if let Some(palette_path) = &config.palette {
+        let p_img = image::open(palette_path)
+            .map_err(|e| {
+                crate::error::PixelSnapperError::ProcessingError(format!(
+                    "Failed to load palette: {}",
+                    e
+                ))
+            })?
+            .to_rgba8();
+
+        let mut unique_colors = std::collections::HashSet::new();
+        let mut palette_vec = Vec::new();
+
+        for p in p_img.pixels() {
+            if p[3] > 128 {
+                // Ignore transparent pixels
+                // Check if color already exists
+                if unique_colors.insert(p.0) {
+                    palette_vec.push(p.0);
+                    if palette_vec.len() >= MAX_PALETTE {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if palette_vec.is_empty() {
+            return Err(crate::error::PixelSnapperError::ProcessingError(
+                "Palette image contains no opaque pixels".to_string(),
+            ));
+        }
+
+        // Map pixels to nearest palette color
+        let mut indexed = vec![255u8; width * height];
+
+        // Use Srgb for distance calculation
+        let palette_srgb: Vec<Srgb> = palette_vec
+            .iter()
+            .map(|p| {
+                Srgb::new(
+                    p[0] as f32 / 255.0,
+                    p[1] as f32 / 255.0,
+                    p[2] as f32 / 255.0,
+                )
+            })
+            .collect();
+
+        // Parallel processing for nearest neighbor mapping
+        indexed
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(y, row_indices)| {
+                for x in 0..width {
+                    let base = y * in_stride + x * 4;
+                    let a = in_samples[base + 3];
+                    if a > 0 {
+                        let r = in_samples[base] as f32 / 255.0;
+                        let g = in_samples[base + 1] as f32 / 255.0;
+                        let b = in_samples[base + 2] as f32 / 255.0;
+                        let input_color = Srgb::new(r, g, b);
+
+                        // Find nearest
+                        let mut min_dist = f32::MAX;
+                        let mut best_idx = 0;
+
+                        for (i, p_color) in palette_srgb.iter().enumerate() {
+                            // Simple Euclidean distance squared
+                            let dr = input_color.red - p_color.red;
+                            let dg = input_color.green - p_color.green;
+                            let db = input_color.blue - p_color.blue;
+                            let dist = dr * dr + dg * dg + db * db;
+                            if dist < min_dist {
+                                min_dist = dist;
+                                best_idx = i;
+                            }
+                        }
+
+                        row_indices[x] = best_idx as u8;
+                    }
+                }
+            });
+
+        // Write output pixels based on indexed
+        let out_samples: Vec<u8> = indexed
+            .par_iter()
+            .map(|&idx| {
+                if idx == 255 {
+                    // Transparent
+                    vec![0, 0, 0, 0]
+                } else {
+                    let p = palette_vec[idx as usize];
+                    vec![p[0], p[1], p[2], 255]
+                }
+            })
+            .flatten()
+            .collect();
+
+        return Ok(QuantizedImage {
+            img: RgbaImage::from_raw(width as u32, height as u32, out_samples).unwrap(),
+            palette: palette_vec,
+            indexed,
+        });
+    }
+
     // Fast path: Build palette and indexed buffer directly for low-color images
     let mut color_to_idx = std::collections::HashMap::with_capacity(MAX_PALETTE);
     let mut palette: Vec<[u8; 4]> = Vec::with_capacity(MAX_PALETTE);
