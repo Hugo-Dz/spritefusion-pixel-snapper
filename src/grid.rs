@@ -7,15 +7,16 @@ use rayon::prelude::*;
 
 pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
     let (w, h) = img.dimensions();
+    let width = w as usize;
+    let height = h as usize;
 
-    if w < 3 || h < 3 {
+    if width < 3 || height < 3 {
         return Err(PixelSnapperError::InvalidInput(
             "Image too small (minimum 3x3)".to_string(),
         ));
     }
 
-    let gray = |x, y| {
-        let p = img.get_pixel(x, y);
+    let gray = |p: &image::Rgba<u8>| {
         if p[3] == 0 {
             0.0
         } else {
@@ -23,41 +24,49 @@ pub fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
         }
     };
 
-    // Parallelize column projection calculation
-    let col_proj: Vec<f64> = (0..w)
+    // Single-pass row-major scan using Rayon for maximum cache locality.
+    // We aggregate horizontal and vertical projection sums simultaneously.
+    let (col_proj, row_proj) = (1..height - 1)
         .into_par_iter()
-        .map(|x| {
-            if x == 0 || x == w - 1 {
-                0.0
-            } else {
-                let mut sum = 0.0;
-                for y in 0..h {
-                    let left = gray(x - 1, y);
-                    let right = gray(x + 1, y);
-                    sum += (right - left).abs();
+        .fold(
+            || (vec![0.0; width], vec![0.0; height]),
+            |(mut cp, mut rp), y| {
+                let y_u32 = y as u32;
+                
+                // Row projection for y: sum over x of |gray(x, y+1) - gray(x, y-1)|
+                let mut row_diff_sum = 0.0;
+                
+                // For column projection: handle x in 1..width-1 within this row
+                for x in 1..width - 1 {
+                    let x_u32 = x as u32;
+                    
+                    // Column contrib: |gray(x+1, y) - gray(x-1, y)|
+                    let g_left = gray(img.get_pixel(x_u32 - 1, y_u32));
+                    let g_right = gray(img.get_pixel(x_u32 + 1, y_u32));
+                    cp[x] += (g_right - g_left).abs();
+                    
+                    // Row contrib: |gray(x, y+1) - gray(x, y-1)|
+                    let g_top = gray(img.get_pixel(x_u32, y_u32 - 1));
+                    let g_bottom = gray(img.get_pixel(x_u32, y_u32 + 1));
+                    row_diff_sum += (g_bottom - g_top).abs();
                 }
-                sum
-            }
-        })
-        .collect();
-
-    // Parallelize row projection calculation
-    let row_proj: Vec<f64> = (0..h)
-        .into_par_iter()
-        .map(|y| {
-            if y == 0 || y == h - 1 {
-                0.0
-            } else {
-                let mut sum = 0.0;
-                for x in 0..w {
-                    let top = gray(x, y - 1);
-                    let bottom = gray(x, y + 1);
-                    sum += (bottom - top).abs();
+                
+                rp[y] = row_diff_sum;
+                (cp, rp)
+            },
+        )
+        .reduce(
+            || (vec![0.0; width], vec![0.0; height]),
+            |(mut cp1, mut rp1), (cp2, rp2)| {
+                for (a, b) in cp1.iter_mut().zip(cp2.iter()) {
+                    *a += b;
                 }
-                sum
-            }
-        })
-        .collect();
+                for (a, b) in rp1.iter_mut().zip(rp2.iter()) {
+                    *a += b;
+                }
+                (cp1, rp1)
+            },
+        );
 
     Ok((col_proj, row_proj))
 }

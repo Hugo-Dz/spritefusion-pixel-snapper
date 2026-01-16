@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::error::Result;
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use palette::{white_point::D65, FromColor, Lab, Srgba};
 
 use rayon::prelude::*;
@@ -28,8 +28,7 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         config.k_colors
     };
 
-    let width = img.width();
-    let height = img.height();
+
     let pixels: Vec<[u8; 4]> = img.pixels().map(|p| p.0).collect();
 
     let opaque_indices: Vec<usize> = pixels
@@ -66,11 +65,12 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     // Perform K-means clustering in Lab space using the faster Hamerly algorithm
     let result = kmeans_colors::get_kmeans_hamerly(k, max_iter, converge, verbose, &lab_pixels, seed);
 
-    // Map pixels back to their closest centroid in parallel
-    let mut quantized_pixels = pixels.clone();
+    // Prepare final image buffer
+    let mut new_img = img.clone();
+    let final_samples = new_img.as_flat_samples_mut().samples;
 
-    // Use a parallel iterator to compute the changes, then apply them
-    let changes: Vec<(usize, [u8; 4])> = opaque_indices
+    // Map quantized pixels back in parallel results
+    let results: Vec<(usize, [u8; 4])> = opaque_indices
         .par_iter()
         .enumerate()
         .map(|(idx, &pixel_idx)| {
@@ -80,6 +80,7 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
 
             // Preserve original alpha
             let original_alpha = pixels[pixel_idx][3];
+            
             let rgba = [
                 (srgba_centroid.red * 255.0).round() as u8,
                 (srgba_centroid.green * 255.0).round() as u8,
@@ -90,15 +91,13 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
         })
         .collect();
 
-    for (idx, rgba) in changes {
-        quantized_pixels[idx] = rgba;
-    }
-
-    let mut new_img = RgbaImage::new(width, height);
-    for (i, p) in quantized_pixels.iter().enumerate() {
-        let x = (i as u32) % width;
-        let y = (i as u32) / width;
-        new_img.put_pixel(x, y, Rgba(*p));
+    // Fast linear update (sequential but memory-efficient)
+    for (idx, rgba) in results {
+        let base = idx * 4;
+        final_samples[base] = rgba[0];
+        final_samples[base + 1] = rgba[1];
+        final_samples[base + 2] = rgba[2];
+        final_samples[base + 3] = rgba[3];
     }
 
     Ok(new_img)
