@@ -11,10 +11,11 @@ image = { version = "0.24", default-features = false, features = ["png", "jpeg",
 clap = { version = "4.4", features = ["derive"] }
 rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
-rand_chacha = "0.3"
-kmeans_colors = { version = "0.6", features = ["palette_color"] }
+kmeans_colors = "0.6"
 palette = { version = "0.7", features = ["std"] }
 rayon = "1.8"
+phf = { version = "0.11", features = ["macros"] }
+wide = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

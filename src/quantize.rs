@@ -79,16 +79,10 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<QuantizedImage
         // Map pixels to nearest palette color
         let mut indexed = vec![255u8; width * height];
 
-        // Use Srgb for distance calculation
-        let palette_srgb: Vec<Srgb> = palette_vec
+        // Integer-only palette for fast distance calculation
+        let palette_int: Vec<[i32; 3]> = palette_vec
             .iter()
-            .map(|p| {
-                Srgb::new(
-                    p[0] as f32 / 255.0,
-                    p[1] as f32 / 255.0,
-                    p[2] as f32 / 255.0,
-                )
-            })
+            .map(|p| [p[0] as i32, p[1] as i32, p[2] as i32])
             .collect();
 
         // Parallel processing for nearest neighbor mapping
@@ -100,20 +94,19 @@ pub fn quantize_image(img: &RgbaImage, config: &Config) -> Result<QuantizedImage
                     let base = y * in_stride + x * 4;
                     let a = in_samples[base + 3];
                     if a > 0 {
-                        let r = in_samples[base] as f32 / 255.0;
-                        let g = in_samples[base + 1] as f32 / 255.0;
-                        let b = in_samples[base + 2] as f32 / 255.0;
-                        let input_color = Srgb::new(r, g, b);
+                        let r = in_samples[base] as i32;
+                        let g = in_samples[base + 1] as i32;
+                        let b = in_samples[base + 2] as i32;
 
                         // Find nearest
-                        let mut min_dist = f32::MAX;
+                        let mut min_dist = i32::MAX;
                         let mut best_idx = 0;
 
-                        for (i, p_color) in palette_srgb.iter().enumerate() {
-                            // Simple Euclidean distance squared
-                            let dr = input_color.red - p_color.red;
-                            let dg = input_color.green - p_color.green;
-                            let db = input_color.blue - p_color.blue;
+                        for (i, p_color) in palette_int.iter().enumerate() {
+                            // Integer squared Euclidean distance
+                            let dr = r - p_color[0];
+                            let dg = g - p_color[1];
+                            let db = b - p_color[2];
                             let dist = dr * dr + dg * dg + db * db;
                             if dist < min_dist {
                                 min_dist = dist;
