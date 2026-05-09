@@ -53,6 +53,14 @@ The command accepts an optional k-colors argument:
 cargo run input.png output.png 16
 ```
 
+You can also override the auto-detected pixel size with `--pixel-size`:
+
+```bash
+cargo run input.png output.png --pixel-size 8
+```
+
+This is useful when the auto-detection doesn't match the expected grid size. The value must be between 1 and half the smallest image dimension.
+
 ### 🌐 Web (WASM)
 
 ```bash
@@ -66,7 +74,18 @@ Build the WASM module:
 wasm-pack build --target web --out-dir pkg --release
 ```
 
-Then use the WASM module in your project.
+Then use the WASM module in your project:
+
+```js
+import init, { process_image } from "./pkg/spritefusion_pixel_snapper.js";
+
+await init();
+
+// process_image(inputBytes, kColors?, pixelSizeOverride?)
+const outputBytes = process_image(inputBytes, 16);
+```
+
+Pass `null` for any optional argument you want to leave on its default behavior.
 
 ## Acknowledgments
 
