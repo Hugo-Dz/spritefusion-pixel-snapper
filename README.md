@@ -23,7 +23,7 @@ A tool to snap pixels to a perfect grid. Designed to fix messy and inconsistent 
 
 - ✅ Pixel are snapped to a perfect grid.
 - ✅ The grid resolution is consistent and can be scaled to pixel resolution.
-- ✅ Colors are tied to a strict, quantized palette.
+- ✅ Colors are tied to a strict, quantized palette. You can also use a custom palette.
 
 ## Perfect for
 
