@@ -17,11 +17,14 @@ use std::path::{Path, PathBuf};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+const MAX_PALETTE_COLORS: usize = 256;
+
 #[derive(Debug, Clone)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct Config {
     pub k_colors: usize,
     pub pixel_size_override: Option<f64>,
+    palette: Option<Vec<[u8; 3]>>,
     k_seed: u64,
     /// Input image path only used for CLI use
     #[allow(dead_code)]
@@ -57,6 +60,7 @@ impl Default for Config {
             fallback_target_segments: 64,
             max_step_ratio: 1.8, // Lowered from 3.0 to catch more skew cases
             pixel_size_override: None,
+            palette: None,
         }
     }
 }
@@ -111,6 +115,7 @@ pub struct BatchConfig {
     pub output_dir: PathBuf,
     pub k_colors: usize,
     pub pixel_size_override: Option<f64>,
+    pub palette: Option<Vec<[u8; 3]>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -121,6 +126,7 @@ impl From<&Config> for BatchConfig {
             output_dir: PathBuf::from(&config.output_path),
             k_colors: config.k_colors,
             pixel_size_override: config.pixel_size_override,
+            palette: config.palette.clone(),
         }
     }
 }
@@ -131,6 +137,7 @@ impl From<&BatchConfig> for Config {
         Self {
             k_colors: config.k_colors,
             pixel_size_override: config.pixel_size_override,
+            palette: config.palette.clone(),
             ..Default::default()
         }
     }
@@ -175,11 +182,6 @@ fn main() -> Result<()> {
     process(&config)
 }
 
-#[cfg(target_arch = "wasm32")]
-fn process_image_bytes_common(input_bytes: &[u8], config: Option<Config>) -> Result<Vec<u8>> {
-    process_image_common(input_bytes, config).map(|processed| processed.output_bytes)
-}
-
 fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<ProcessedImage> {
     let config = config.unwrap_or_default();
 
@@ -200,8 +202,8 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
 
     let rgba_img = img.to_rgba8();
 
-    let quantized_img = quantize_image(&rgba_img, &config)?;
-    let (profile_x, profile_y) = compute_profiles(&quantized_img)?;
+    let analysis_img = quantize_image(&rgba_img, &config)?;
+    let (profile_x, profile_y) = compute_profiles(&analysis_img)?;
 
     // Estimate step sizes
     let step_x_opt = estimate_step_size(&profile_x, &config);
@@ -224,7 +226,11 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
         &config,
     );
 
-    let output_img = resample(&quantized_img, &col_cuts, &row_cuts)?;
+    let snapped_img = resample(&analysis_img, &col_cuts, &row_cuts)?;
+    let output_img = match config.palette.as_deref() {
+        Some(palette) => apply_palette(&snapped_img, palette)?,
+        None => snapped_img,
+    };
 
     // Returns bytes for both implementations
     let mut output_bytes = Vec::new();
@@ -243,12 +249,14 @@ fn process_image_common(input_bytes: &[u8], config: Option<Config>) -> Result<Pr
 }
 
 /// WASM entry point
+/// `palette_hex` is a comma-separated list of hex colors: `"0d2b45,ffecd6"`.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn process_image(
     input_bytes: &[u8],
     k_colors: Option<u32>,
     pixel_size_override: Option<f64>,
+    palette_hex: Option<String>,
 ) -> std::result::Result<Vec<u8>, wasm_bindgen::JsValue> {
     let mut config = Config::default();
     if let Some(k) = k_colors {
@@ -261,9 +269,15 @@ pub fn process_image(
     }
 
     config.pixel_size_override = pixel_size_override;
+    config.palette = palette_hex
+        .as_deref()
+        .map(parse_palette_hex)
+        .transpose()
+        .map_err(wasm_bindgen::JsValue::from)?;
 
-    process_image_bytes_common(input_bytes, Some(config))
-        .map_err(|e| wasm_bindgen::JsValue::from(e))
+    process_image_common(input_bytes, Some(config))
+        .map(|processed| processed.output_bytes)
+        .map_err(wasm_bindgen::JsValue::from)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -292,6 +306,18 @@ fn parse_args() -> Option<Config> {
                 match val.parse::<f64>() {
                     Ok(px) if px.is_finite() && px > 0.0 => config.pixel_size_override = Some(px),
                     _ => eprintln!("Warning: invalid --pixel-size '{}', ignoring", val),
+                }
+                i += 2;
+            }
+            "--palette" => {
+                let Some(val) = args.get(i + 1) else {
+                    eprintln!("Warning: --palette requires a value");
+                    break;
+                };
+
+                match parse_palette_hex(val) {
+                    Ok(palette) => config.palette = Some(palette),
+                    Err(e) => eprintln!("Warning: {}, ignoring --palette", e),
                 }
                 i += 2;
             }
@@ -755,6 +781,84 @@ fn quantize_image(img: &RgbaImage, config: &Config) -> Result<RgbaImage> {
     Ok(new_img)
 }
 
+fn parse_palette_hex(value: &str) -> Result<Vec<[u8; 3]>> {
+    if value.trim().is_empty() {
+        return Err(PixelSnapperError::InvalidInput(
+            "Palette must contain at least one color".to_string(),
+        ));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut palette = Vec::new();
+    for part in value.split(',') {
+        let hex = part.trim().trim_start_matches('#');
+        if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(PixelSnapperError::InvalidInput(format!(
+                "invalid palette color '{}', expected a 6-digit hex code",
+                part.trim()
+            )));
+        }
+        let color = [
+            u8::from_str_radix(&hex[0..2], 16).unwrap(),
+            u8::from_str_radix(&hex[2..4], 16).unwrap(),
+            u8::from_str_radix(&hex[4..6], 16).unwrap(),
+        ];
+        if seen.insert(color) {
+            palette.push(color);
+        }
+    }
+
+    if palette.len() > MAX_PALETTE_COLORS {
+        return Err(PixelSnapperError::InvalidInput(format!(
+            "Palette must contain at most {} distinct colors",
+            MAX_PALETTE_COLORS
+        )));
+    }
+    Ok(palette)
+}
+
+fn nearest_palette_color(rgb: [u8; 3], palette: &[[u8; 3]]) -> [u8; 3] {
+    let mut best_color = palette[0];
+    let mut best_distance = u32::MAX;
+    for color in palette {
+        let dr = rgb[0] as i32 - color[0] as i32;
+        let dg = rgb[1] as i32 - color[1] as i32;
+        let db = rgb[2] as i32 - color[2] as i32;
+        let distance = (dr * dr + dg * dg + db * db) as u32;
+        if distance < best_distance {
+            best_distance = distance;
+            best_color = *color;
+        }
+    }
+    best_color
+}
+
+fn apply_palette(img: &RgbaImage, palette: &[[u8; 3]]) -> Result<RgbaImage> {
+    if palette.is_empty() {
+        return Err(PixelSnapperError::InvalidInput(
+            "Palette must contain at least one RGB color".to_string(),
+        ));
+    }
+
+    let mut cache: HashMap<[u8; 3], [u8; 3]> = HashMap::new();
+    let mut recolored_img = RgbaImage::new(img.width(), img.height());
+
+    for (x, y, pixel) in img.enumerate_pixels() {
+        if pixel[3] == 0 {
+            recolored_img.put_pixel(x, y, *pixel);
+            continue;
+        }
+
+        let key = [pixel[0], pixel[1], pixel[2]];
+        let color = *cache
+            .entry(key)
+            .or_insert_with(|| nearest_palette_color(key, palette));
+        recolored_img.put_pixel(x, y, Rgba([color[0], color[1], color[2], pixel[3]]));
+    }
+
+    Ok(recolored_img)
+}
+
 fn compute_profiles(img: &RgbaImage) -> Result<(Vec<f64>, Vec<f64>)> {
     let (w, h) = img.dimensions();
 
@@ -1162,7 +1266,6 @@ fn resample(img: &RgbaImage, cols: &[usize], rows: &[usize]) -> Result<RgbaImage
             "Insufficient grid cuts for resampling".to_string(),
         ));
     }
-
     let out_w = (cols.len().max(1) - 1) as u32;
     let out_h = (rows.len().max(1) - 1) as u32;
     let mut final_img: RgbaImage = ImageBuffer::new(out_w, out_h);

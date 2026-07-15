@@ -23,7 +23,7 @@ A tool to snap pixels to a perfect grid. Designed to fix messy and inconsistent 
 
 - ✅ Pixel are snapped to a perfect grid.
 - ✅ The grid resolution is consistent and can be scaled to pixel resolution.
-- ✅ Colors are tied to a strict, quantized palette.
+- ✅ Colors are tied to a strict, quantized palette. You can also use a custom palette.
 
 ## Perfect for
 
@@ -64,7 +64,7 @@ Use a directory as the input path to process a batch.
 cargo run sprites/batch_inputs sprites/batch_outputs 16
 ```
 
-You can also override the auto-detected pixel size with `--pixel-size`:
+Override the auto-detected pixel size with `--pixel-size`:
 
 ```bash
 cargo run input.png output.png --pixel-size 8
@@ -72,6 +72,13 @@ cargo run sprites/batch_inputs sprites/batch_outputs 16 --pixel-size 8
 ```
 
 This is useful when the auto-detection doesn't match the expected grid size. The value must be between 1 and half the smallest image dimension.
+
+Constrain the output to a fixed palette with `--palette`, passing comma-separated hex colors:
+
+```bash
+cargo run input.png output.png --palette "0d2b45,203c56,544e68,8d697a,d08159,ffaa5e,ffd4a3,ffecd6"
+cargo run sprites/batch_inputs sprites/batch_outputs --palette "0d2b45,203c56,544e68,8d697a"
+```
 
 ### 🌐 Web (WASM)
 
@@ -93,8 +100,11 @@ import init, { process_image } from "./pkg/spritefusion_pixel_snapper.js";
 
 await init();
 
-// process_image(inputBytes, kColors?, pixelSizeOverride?)
+// process_image(inputBytes, kColors?, pixelSizeOverride?, paletteHex?)
 const outputBytes = process_image(inputBytes, 16);
+
+// With a custom palette
+const recoloredBytes = process_image(inputBytes, null, null, "0f0f1b,ffecd6,ff4d6d,29adff");
 ```
 
 Pass `null` for any optional argument you want to leave on its default behavior.
