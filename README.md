@@ -95,7 +95,7 @@ cargo build --release
 
 The binary will be available at `target/release/spritefusion-pixel-snapper`.
 
-## 🌐 Use it on the Web (WASM)
+## 🌐 Web (WASM)
 
 ```bash
 git clone https://github.com/Hugo-Dz/spritefusion-pixel-snapper.git
