@@ -130,6 +130,16 @@ Pixel Snapper is a [Sprite Fusion](https://www.spritefusion.com/pixel-art-genera
 
 <img src="./static/spritefusion-generator.webp" alt="Sprite Fusion Pixel Art Generator" style="width: 100%;">
 
+## Other open source pixel art tools
+
+**Sprite Fusion Sprite Normals**: generate normal maps for pixel art sprites and animations, so they react to dynamic lighting.
+
+- **Repo**: https://github.com/Hugo-Dz/spritefusion-sprite-normals
+- **API**: https://www.spritefusion.com/docs/pixel-art-generator/api/generate-and-transform-images#normal-maps
+- **MCP**: https://www.spritefusion.com/docs/pixel-art-generator/api/mcp
+
+<img src="https://raw.githubusercontent.com/Hugo-Dz/spritefusion-sprite-normals/main/static/hero.webp" alt="Sprite Normals" style="width: 100%; image-rendering: pixelated;">
+
 ## License
 
 MIT License [Hugo Duprez](https://www.hugoduprez.com/)
